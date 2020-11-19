@@ -134,6 +134,13 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 		return mergedSchema, nil
 	}
 
+	// Schema type and format, eg. string / binary
+	t := schema.Type
+
+	nullable, t, err := checkNullableType(schema.Type)
+	if err != nil {
+		return Schema{}, errors.Wrap(err, fmt.Sprintf("checkNullableType '%s'", schema.Title))
+	}
 	outSchema := Schema{
 		RefType: refType,
 	}
@@ -176,23 +183,19 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 				if err != nil {
 					return Schema{}, errors.Wrap(err, fmt.Sprintf("error generating Go schema for property '%s'", pName))
 				}
-
 				required := StringInArray(pName, schema.Required)
-
 				if pSchema.HasAdditionalProperties && pSchema.RefType == "" {
 					// If we have fields present which have additional properties,
 					// but are not a pre-defined type, we need to define a type
 					// for them, which will be based on the field names we followed
 					// to get to the type.
 					typeName := PathToTypeName(propertyPath)
-
 					typeDef := TypeDefinition{
 						TypeName: typeName,
 						JsonName: strings.Join(propertyPath, "."),
 						Schema:   pSchema,
 					}
 					pSchema.AdditionalTypes = append(pSchema.AdditionalTypes, typeDef)
-
 					pSchema.RefType = typeName
 				}
 				description := ""
@@ -204,7 +207,7 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 					Schema:        pSchema,
 					Required:      required,
 					Description:   description,
-					Nullable:      p.Value.Nullable,
+					Nullable:      p.Value.Nullable || isNullableProperties(pSchema.Properties),
 				}
 				outSchema.Properties = append(outSchema.Properties, prop)
 			}
@@ -226,7 +229,11 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 		return outSchema, nil
 	} else {
 		f := schema.Format
-
+		outSchema.Properties = []Property{
+			{
+				Nullable: nullable,
+			},
+		}
 		switch t {
 		case "array":
 			// For arrays, we'll get the type of the Items and throw a
@@ -296,6 +303,38 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 		}
 	}
 	return outSchema, nil
+}
+
+func isNullableProperties(props []Property) bool {
+	for _, prop := range props {
+		if prop.Nullable {
+			return true
+		}
+	}
+	return false
+}
+
+func checkNullableType(t interface{}) (nullable bool, typename string, err error) {
+	switch ts := t.(type) {
+	case []interface{}:
+		vs := t.([]interface{})
+		if len(vs) != 2 {
+			return false, "", fmt.Errorf("Schema type: []string length should be equal 2: %v", len(vs))
+		}
+		if vs[0] == "null" {
+			typename = vs[1].(string)
+		} else if vs[1] == "null" {
+			typename = vs[0].(string)
+		}
+		if typename == "" {
+			return false, "", fmt.Errorf("Type: []string should something and null but got: %v", vs)
+		}
+		return true, typename, nil
+	case string:
+		return false, t.(string), nil
+	default:
+		return false, "", fmt.Errorf("Schema type: []string or string but got %v, type: %v", t, ts)
+	}
 }
 
 // This describes a Schema, a type definition.
