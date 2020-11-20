@@ -155,8 +155,6 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 		return outSchema, nil
 	}
 
-	// Schema type and format, eg. string / binary
-	t := schema.Type
 	// Handle objects and empty schemas first as a special case
 	if t == "" || t == "object" {
 		var outType string
