@@ -227,11 +227,7 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 		return outSchema, nil
 	} else {
 		f := schema.Format
-		outSchema.Properties = []Property{
-			{
-				Nullable: nullable,
-			},
-		}
+		outSchema.Properties = []Property{{Nullable: nullable}}
 		switch t {
 		case "array":
 			// For arrays, we'll get the type of the Items and throw a
@@ -240,7 +236,12 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 			if err != nil {
 				return Schema{}, errors.Wrap(err, "error generating type for array")
 			}
-			outSchema.GoType = "[]" + arrayType.TypeDecl()
+
+			goType := arrayType.TypeDecl()
+			if len(arrayType.Properties) > 0 && arrayType.Properties[0].Nullable {
+				goType = "*" + arrayType.TypeDecl()
+			}
+			outSchema.GoType = "[]" + goType
 			outSchema.Properties = arrayType.Properties
 		case "integer":
 			// We default to int if format doesn't ask for something else.
@@ -330,6 +331,8 @@ func checkNullableType(t interface{}) (nullable bool, typename string, err error
 		return true, typename, nil
 	case string:
 		return false, t.(string), nil
+	case nil:
+		return false, "", nil
 	default:
 		return false, "", fmt.Errorf("Schema type: []string or string but got %v, type: %v", t, ts)
 	}
