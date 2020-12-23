@@ -8,11 +8,12 @@ import (
 	"compress/gzip"
 	"encoding/base64"
 	"fmt"
+	"net/http"
+	"strings"
+
 	"github.com/deepmap/oapi-codegen/pkg/runtime"
 	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/labstack/echo/v4"
-	"net/http"
-	"strings"
 )
 
 // ServerInterface represents all server handlers.
@@ -119,15 +120,21 @@ type EchoRouter interface {
 
 // RegisterHandlers adds each server route to the EchoRouter.
 func RegisterHandlers(router EchoRouter, si ServerInterface) {
+	RegisterHandlersWithBaseURL(router, si, "")
+}
+
+// Registers handlers, and prepends BaseURL to the paths, so that the paths
+// can be served under a prefix.
+func RegisterHandlersWithBaseURL(router EchoRouter, si ServerInterface, baseURL string) {
 
 	wrapper := ServerInterfaceWrapper{
 		Handler: si,
 	}
 
-	router.GET("/pets", wrapper.FindPets)
-	router.POST("/pets", wrapper.AddPet)
-	router.DELETE("/pets/:id", wrapper.DeletePet)
-	router.GET("/pets/:id", wrapper.FindPetById)
+	router.GET(baseURL+"/pets", wrapper.FindPets)
+	router.POST(baseURL+"/pets", wrapper.AddPet)
+	router.DELETE(baseURL+"/pets/:id", wrapper.DeletePet)
+	router.GET(baseURL+"/pets/:id", wrapper.FindPetById)
 
 }
 

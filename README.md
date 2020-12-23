@@ -5,7 +5,7 @@ This package contains a set of utilities for generating Go boilerplate code for
 services based on
 [OpenAPI 3.0](https://github.com/OAI/OpenAPI-Specification/blob/master/versions/3.0.0.md)
 API definitions. When working with services, it's important to have an API
-contract which servers and clients both imprement to minimize the chances of
+contract which servers and clients both implement to minimize the chances of
 incompatibilities. It's tedious to generate Go models which precisely correspond to
 OpenAPI specifications, so let our code generator do that work for you, so that
 you can focus on implementing the business logic for your service.
@@ -246,7 +246,7 @@ func (a NewPet) MarshalJSON() ([]byte, error) {...}w
 There are many special cases for `additionalProperties`, such as having to
 define types for inner fields which themselves support additionalProperties, and
 all of them are tested via the `internal/test/components` schemas and tests. Please
-look through those tests for more usage examples. 
+look through those tests for more usage examples.
 
 ## Generated Client Boilerplate
 
@@ -319,7 +319,7 @@ The Client object above is fairly flexible, since you can pass in your own
 headers. In our middleware stack, we annotate the context with additional
 information such as the request ID and function tracing information, and we
 use the callback to propagate that information into the request headers. Still, we
-can't foresee all possible usages, so those functions call through to helper 
+can't foresee all possible usages, so those functions call through to helper
 functions which create requests. In the case of the pet store, we have:
 
 ```go
@@ -419,6 +419,15 @@ which help you to use the various OpenAPI 3 Authentication mechanism.
     }
 ```
 
+## Extensions
+
+`oapi-codegen` supports the following extended properties:
+
+- `x-go-type`: specifies Go type name. It allows you to specify the type name for a schema, and
+ will override any default value. This extended property isn't supported in all parts of
+ OpenAPI, so please refer to the spec as to where it's allowed. Swagger validation tools will
+ flag incorrect usage of this property.
+
 ## Using `oapi-codegen`
 
 The default options for `oapi-codegen` will generate everything; client, server,
@@ -436,10 +445,12 @@ you can specify any combination of those.
 - `client`: generate the client boilerplate. It, too, requires the types to be
  present in its package.
 - `spec`: embed the OpenAPI spec into the generated code as a gzipped blob. This
-- `skip-fmt`: skip running `go fmt` on the generated code. This is useful for debugging
+- `skip-fmt`: skip running `goimports` on the generated code. This is useful for debugging
  the generated file in case the spec contains weird strings.
 - `skip-prune`: skip pruning unused components from the spec prior to generating
  the code.
+- `import-mapping`: specifies a map of references external OpenAPI specs to go
+ Go include paths. Please see below.
 
 So, for example, if you would like to produce only the server code, you could
 run `oapi-generate -generate types,server`. You could generate `types` and
@@ -452,6 +463,55 @@ tagged with `auth` or `admin`, use the argument, `-exclude-tags="auth,admin"`.
 To generate a server that only handles `admin` paths, use the argument
 `-include-tags="admin"`. When neither of these arguments is present, all paths
 are generated.
+
+`oapi-codegen` can filter schemas based on the option `--exclude-schemas`, which is
+a comma separated list of schema names. For instance, `--exclude-schemas=Pet,NewPet`
+will exclude from generation schemas `Pet` and `NewPet`. This allow to have a
+in the same package a manually defined structure or interface and refer to it
+in the openapi spec.
+
+Since `go generate` commands must be a single line, all the options above can make
+them pretty unwieldy, so you can specify all of the options in a configuration
+file via the `--config` option. Please see the test under
+[`/internal/test/externalref/`](https://github.com/deepmap/oapi-codegen/blob/master/internal/test/externalref/externalref.cfg.yaml)
+for an example. The structure of the file is as follows:
+    
+```yaml
+output:
+  externalref.gen.go
+package: externalref
+generate:
+  - types
+  - skip-prune
+import-mapping:
+  ./packageA/spec.yaml: github.com/deepmap/oapi-codegen/internal/test/externalref/packageA
+  ./packageB/spec.yaml: github.com/deepmap/oapi-codegen/internal/test/externalref/packageB
+```
+
+Have a look at [`cmd/oapi-codegen/oapi-codegen.go`](https://github.com/deepmap/oapi-codegen/blob/master/cmd/oapi-codegen/oapi-codegen.go#L48) 
+to see all the fields on the configuration structure.
+
+### Import Mappings
+
+OpenAPI specifications may contain references to other OpenAPI specifications,
+and we need some additional information in order to be able to generate correct
+Go code.
+
+An external reference looks like this:
+
+    $ref: ./some_spec.yaml#/components/schemas/Type
+
+We assume that you have already generated the boilerplate code for `./some_spec.yaml`
+using `oapi-codegen`, and you have a package which contains the generated code,
+let's call it `github.com/deepmap/some-package`. You need to tell `oapi-codegen` that
+`some_spec.yaml` corresponds to this package, and you would do it by specifying
+this command line argument:
+
+    -import-mapping=./some_spec.yaml:github.com/deepmap/some-package
+
+This tells us that in order to resolve references generated from `some_spec.yaml` we
+need to import `github.com/deepmap/some-package`. You may specify multiple mappings
+by comma separating them in the form `key1:value1,key2:value2`.
 
 ## What's missing or incomplete
 

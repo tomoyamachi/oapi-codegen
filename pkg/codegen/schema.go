@@ -13,7 +13,7 @@ type Schema struct {
 	GoType  string // The Go type needed to represent the schema
 	RefType string // If the type has a type name, this is set
 
-	EnumValues []string // Enum values
+	EnumValues map[string]string // Enum values
 
 	Properties               []Property       // For an object, the fields with names
 	HasAdditionalProperties  bool             // Whether we support additional properties
@@ -137,9 +137,24 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 	// Schema type and format, eg. string / binary
 	t := schema.Type
 
+	nullable, t, err := checkNullableType(schema.Type)
+	if err != nil {
+		return Schema{}, errors.Wrap(err, fmt.Sprintf("checkNullableType '%s'", schema.Title))
+	}
 	outSchema := Schema{
 		RefType: refType,
 	}
+
+	// Check for custom Go type extension
+	if extension, ok := schema.Extensions[extPropGoType]; ok {
+		typeName, err := extTypeName(extension)
+		if err != nil {
+			return outSchema, errors.Wrapf(err, "invalid value for %q", extPropGoType)
+		}
+		outSchema.GoType = typeName
+		return outSchema, nil
+	}
+
 	// Handle objects and empty schemas first as a special case
 	if t == "" || t == "object" {
 		var outType string
@@ -166,23 +181,19 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 				if err != nil {
 					return Schema{}, errors.Wrap(err, fmt.Sprintf("error generating Go schema for property '%s'", pName))
 				}
-
 				required := StringInArray(pName, schema.Required)
-
 				if pSchema.HasAdditionalProperties && pSchema.RefType == "" {
 					// If we have fields present which have additional properties,
 					// but are not a pre-defined type, we need to define a type
 					// for them, which will be based on the field names we followed
 					// to get to the type.
 					typeName := PathToTypeName(propertyPath)
-
 					typeDef := TypeDefinition{
 						TypeName: typeName,
 						JsonName: strings.Join(propertyPath, "."),
 						Schema:   pSchema,
 					}
 					pSchema.AdditionalTypes = append(pSchema.AdditionalTypes, typeDef)
-
 					pSchema.RefType = typeName
 				}
 				description := ""
@@ -194,7 +205,7 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 					Schema:        pSchema,
 					Required:      required,
 					Description:   description,
-					Nullable:      p.Value.Nullable,
+					Nullable:      p.Value.Nullable || isNullableProperties(pSchema.Properties),
 				}
 				outSchema.Properties = append(outSchema.Properties, prop)
 			}
@@ -216,7 +227,7 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 		return outSchema, nil
 	} else {
 		f := schema.Format
-
+		outSchema.Properties = []Property{{Nullable: nullable}}
 		switch t {
 		case "array":
 			// For arrays, we'll get the type of the Items and throw a
@@ -225,14 +236,23 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 			if err != nil {
 				return Schema{}, errors.Wrap(err, "error generating type for array")
 			}
-			outSchema.GoType = "[]" + arrayType.TypeDecl()
+
+			goType := arrayType.TypeDecl()
+			if len(arrayType.Properties) > 0 && arrayType.Properties[0].Nullable {
+				goType = "*" + arrayType.TypeDecl()
+			}
+			outSchema.GoType = "[]" + goType
 			outSchema.Properties = arrayType.Properties
 		case "integer":
 			// We default to int if format doesn't ask for something else.
 			if f == "int64" {
 				outSchema.GoType = "int64"
+			} else if f == "uint64" {
+				outSchema.GoType = "uint64"
 			} else if f == "int32" {
 				outSchema.GoType = "int32"
+			} else if f == "uint32" {
+				outSchema.GoType = "uint32"
 			} else if f == "" {
 				outSchema.GoType = "int"
 			} else {
@@ -253,13 +273,19 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 			}
 			outSchema.GoType = "bool"
 		case "string":
-			for _, enumValue := range schema.Enum {
-				outSchema.EnumValues = append(outSchema.EnumValues, enumValue.(string))
+			enumValues := make([]string, len(schema.Enum))
+			for i, enumValue := range schema.Enum {
+				enumValues[i] = enumValue.(string)
 			}
+
+			outSchema.EnumValues = SanitizeEnumNames(enumValues)
+
 			// Special case string formats here.
 			switch f {
 			case "byte":
 				outSchema.GoType = "[]byte"
+			case "email":
+				outSchema.GoType = "openapi_types.Email"
 			case "date":
 				outSchema.GoType = "openapi_types.Date"
 			case "date-time":
@@ -276,6 +302,40 @@ func GenerateGoSchema(sref *openapi3.SchemaRef, path []string) (Schema, error) {
 		}
 	}
 	return outSchema, nil
+}
+
+func isNullableProperties(props []Property) bool {
+	for _, prop := range props {
+		if prop.Nullable {
+			return true
+		}
+	}
+	return false
+}
+
+func checkNullableType(t interface{}) (nullable bool, typename string, err error) {
+	switch ts := t.(type) {
+	case []interface{}:
+		vs := t.([]interface{})
+		if len(vs) != 2 {
+			return false, "", fmt.Errorf("Schema type: []string length should be equal 2: %v", len(vs))
+		}
+		if vs[0] == "null" {
+			typename = vs[1].(string)
+		} else if vs[1] == "null" {
+			typename = vs[0].(string)
+		}
+		if typename == "" {
+			return false, "", fmt.Errorf("Type: []string should something and null but got: %v", vs)
+		}
+		return true, typename, nil
+	case string:
+		return false, t.(string), nil
+	case nil:
+		return false, "", nil
+	default:
+		return false, "", fmt.Errorf("Schema type: []string or string but got %v, type: %v", t, ts)
+	}
 }
 
 // This describes a Schema, a type definition.
@@ -421,6 +481,17 @@ func GenStructFromAllOf(allOf []*openapi3.SchemaRef, path []string) (string, err
 			objectParts = append(objectParts, "   // Embedded fields due to inline allOf schema")
 			objectParts = append(objectParts, GenFieldsFromProperties(goSchema.Properties)...)
 
+			if goSchema.HasAdditionalProperties {
+				addPropsType := goSchema.AdditionalPropertiesType.GoType
+				if goSchema.AdditionalPropertiesType.RefType != "" {
+					addPropsType = goSchema.AdditionalPropertiesType.RefType
+				}
+
+				additionalPropertiesPart := fmt.Sprintf("AdditionalProperties map[string]%s `json:\"-\"`", addPropsType)
+				if !StringInArray(additionalPropertiesPart, objectParts) {
+					objectParts = append(objectParts, additionalPropertiesPart)
+				}
+			}
 		}
 	}
 	objectParts = append(objectParts, "}")
